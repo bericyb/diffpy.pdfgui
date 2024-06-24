@@ -20,7 +20,7 @@ def _expand_tooltip_aliases(ttps):
     "Replace aliased equivalent values {other} in tooltip strings."
     isalias = lambda s: (s[1:-1] and s[::len(s) - 1] == '{}' and
                          s[1:-1].replace('_', '').isalnum())
-    for n, t in ttps.items():
+    for n, t in list(ttps.items()):
         if not isalias(t):
             continue
         t1 = t.format(**ttps)
@@ -139,6 +139,21 @@ all-all, !Cl-!Cl     exclude any pairs containing Cl
 all-all, !Cl-, -!Cl  same as previous
 1-all                only pairs including the first atom""", # TextCtrl "all-all"
 #    'gridAtoms' : '', # AutoWidthLabelsGrid
+})
+
+magpanel = _expand_tooltip_aliases({
+    'buttonAdvanced' : 'Opens advanced magnetic PDF panel', # Button "Advanced"
+    'textCtrlIncludedPairs' :
+"""[!]{element|indexOrRange|all}-[!]{element|indexOrRange|all}
+Examples:
+all-all              all possible pairs
+Na-Na                only Na-Na pairs
+all-all, !Na-        all pairs except Na-Na
+all-all, -!Na        same as previous
+Na-1:4               pairs of Na and first 4 atoms
+all-all, !Cl-!Cl     exclude any pairs containing Cl
+all-all, !Cl-, -!Cl  same as previous
+1-all                only pairs including the first atom""", # TextCtrl "all-all"
 })
 
 

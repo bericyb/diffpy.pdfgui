@@ -18,6 +18,7 @@
 
 import wx
 import wx.grid
+import numpy as np
 from diffpy.structure import Atom
 from diffpy.pdffit2 import is_element
 from diffpy.pdfgui.gui.insertrowsdialog import InsertRowsDialog
@@ -31,6 +32,11 @@ from diffpy.pdfgui.gui.wxextensions import wx12
 from diffpy.pdfgui.gui import phasepanelutils
 from diffpy.utils.wx import gridutils
 
+from diffpy.pdfgui.gui.magconfigurepanel import MagConfigurePanel
+from diffpy.pdfgui.gui.magconstraintspanel import MagConstraintsPanel
+from diffpy.pdfgui.control.magstructure import MagStructure
+from diffpy.pdfgui.control.magstructure import MagSpecies
+import random, string
 
 class PhaseConfigurePanel(wx.Panel, PDFPanel):
     """Panel for configuring a phase.
@@ -59,7 +65,10 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
         self.labelBeta = wx.StaticText(self, wx.ID_ANY, "beta")
         self.textCtrlBeta = wx.TextCtrl(self, wx.ID_ANY, "", style=wx.TE_PROCESS_ENTER)
         self.labelGamma = wx.StaticText(self, wx.ID_ANY, "gamma")
-        self.textCtrlGamma = wx.TextCtrl(self, wx.ID_ANY, "", style=wx.TE_PROCESS_ENTER)
+        self.textCtrlGamma = wx.TextCtrl(
+            self, wx.ID_ANY, "", style=wx.TE_PROCESS_ENTER)
+        #self.enableMag = wx.CheckBox(self, wx.ID_ANY, "Enable Magnetic PDF")
+
         self.labelScaleFactor = wx.StaticText(self, wx.ID_ANY, "Scale Factor")
         self.textCtrlScaleFactor = wx.TextCtrl(self, wx.ID_ANY, "", style=wx.TE_PROCESS_ENTER)
         self.labelDelta1 = wx.StaticText(self, wx.ID_ANY, "delta1")
@@ -77,23 +86,31 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
         self.labelIncludedPairs = wx.StaticText(self, wx.ID_ANY, "Included Pairs")
         self.textCtrlIncludedPairs = wx.TextCtrl(self, wx.ID_ANY, "all-all")
         self.gridAtoms = AutoWidthLabelsGrid(self, wx.ID_ANY, size=(1, 1))
+        self.editAtoms = True
 
         self.__set_properties()
         self.__do_layout()
 
-        self.Bind(wx.grid.EVT_GRID_CMD_CELL_CHANGED, self.onCellChange, self.gridAtoms)
-        self.Bind(wx.grid.EVT_GRID_CMD_CELL_RIGHT_CLICK, self.onCellRightClick, self.gridAtoms)
-        self.Bind(wx.grid.EVT_GRID_CMD_EDITOR_SHOWN, self.onEditorShown, self.gridAtoms)
-        self.Bind(wx.grid.EVT_GRID_CMD_LABEL_RIGHT_CLICK, self.onLabelRightClick, self.gridAtoms)
+        self.Bind(wx.grid.EVT_GRID_CMD_CELL_CHANGED,
+                  self.onCellChange, self.gridAtoms)
+        self.Bind(wx.grid.EVT_GRID_CMD_CELL_RIGHT_CLICK,
+                  self.onCellRightClick, self.gridAtoms)
+        self.Bind(wx.grid.EVT_GRID_CMD_EDITOR_SHOWN,
+                  self.onEditorShown, self.gridAtoms)
+        self.Bind(wx.grid.EVT_GRID_CMD_LABEL_RIGHT_CLICK,
+                  self.onLabelRightClick, self.gridAtoms)
+        #self.Bind(wx.EVT_CHECKBOX, self.onCheck, self.enableMag)
+
         # end wxGlade
         self.__customProperties()
+
 
     def __set_properties(self):
         # begin wxGlade: PhaseConfigurePanel.__set_properties
         self.SetFocus()
         self.labelPanelName.SetFont(wx.Font(18, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD, 0, ""))
         self.textCtrlIncludedPairs.SetMinSize((240, 25))
-        self.gridAtoms.CreateGrid(0, 11)
+        self.gridAtoms.CreateGrid(0, 12)
         self.gridAtoms.EnableDragRowSize(0)
         self.gridAtoms.SetColLabelValue(0, "elem")
         self.gridAtoms.SetColLabelValue(1, "x")
@@ -106,6 +123,8 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
         self.gridAtoms.SetColLabelValue(8, "u13")
         self.gridAtoms.SetColLabelValue(9, "u23")
         self.gridAtoms.SetColLabelValue(10, "occ")
+        self.gridAtoms.SetColLabelValue(11, "magnetic")
+        self.gridAtoms.HideCol(11)
         # end wxGlade
 
     def __do_layout(self):
@@ -113,6 +132,7 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
         sizerMain = wx.BoxSizer(wx.VERTICAL)
         sizerAtoms = wx.StaticBoxSizer(wx.StaticBox(self, wx.ID_ANY, ""), wx.VERTICAL)
         sizer_1 = wx.BoxSizer(wx.HORIZONTAL)
+        sizer_2 = wx.BoxSizer(wx.HORIZONTAL)
         sizerAdditionalParameters = wx.StaticBoxSizer(wx.StaticBox(self, wx.ID_ANY, ""), wx.HORIZONTAL)
         grid_sizer_4 = wx.FlexGridSizer(3, 6, 0, 0)
         sizerLatticeParameters = wx.StaticBoxSizer(wx.StaticBox(self, wx.ID_ANY, ""), wx.HORIZONTAL)
@@ -120,19 +140,34 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
         sizerPanelName = wx.StaticBoxSizer(wx.StaticBox(self, wx.ID_ANY, ""), wx.HORIZONTAL)
         sizerPanelName.Add(self.labelPanelName, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT | wx.RIGHT, 5)
         sizerMain.Add(sizerPanelName, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
-        grid_sizer_3.Add(self.labelA, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT | wx.ALL, 5)
-        grid_sizer_3.Add(self.textCtrlA, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
-        grid_sizer_3.Add(self.labelB, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT | wx.ALL, 5)
-        grid_sizer_3.Add(self.textCtrlB, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
-        grid_sizer_3.Add(self.labelC, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT | wx.ALL, 5)
-        grid_sizer_3.Add(self.textCtrlC, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
-        grid_sizer_3.Add(self.labelAlpha, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT | wx.ALL, 5)
-        grid_sizer_3.Add(self.textCtrlAlpha, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
-        grid_sizer_3.Add(self.labelBeta, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT | wx.ALL, 5)
-        grid_sizer_3.Add(self.textCtrlBeta, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
-        grid_sizer_3.Add(self.labelGamma, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT | wx.ALL, 5)
-        grid_sizer_3.Add(self.textCtrlGamma, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
+        grid_sizer_3.Add(self.labelA, 0, wx.ALIGN_CENTER_VERTICAL |
+                         wx.ALIGN_RIGHT | wx.ALL, 5)
+        grid_sizer_3.Add(self.textCtrlA, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
+        grid_sizer_3.Add(self.labelB, 0, wx.ALIGN_CENTER_VERTICAL |
+                         wx.ALIGN_RIGHT | wx.ALL, 5)
+        grid_sizer_3.Add(self.textCtrlB, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
+        grid_sizer_3.Add(self.labelC, 0, wx.ALIGN_CENTER_VERTICAL |
+                         wx.ALIGN_RIGHT | wx.ALL, 5)
+        grid_sizer_3.Add(self.textCtrlC, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
+        grid_sizer_3.Add(self.labelAlpha, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT | wx.ALL, 5)
+        grid_sizer_3.Add(self.textCtrlAlpha, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
+        grid_sizer_3.Add(self.labelBeta, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT | wx.ALL, 5)
+        grid_sizer_3.Add(self.textCtrlBeta, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
+        grid_sizer_3.Add(self.labelGamma, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT | wx.ALL, 5)
+        grid_sizer_3.Add(self.textCtrlGamma, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
+        #sizer_2.Add(self.enableMag, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 15)
+
         sizerLatticeParameters.Add(grid_sizer_3, 1, wx.EXPAND, 0)
+        sizerLatticeParameters.Add(sizer_2, 2, wx.EXPAND,0)
         sizerMain.Add(sizerLatticeParameters, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
         grid_sizer_4.Add(self.labelScaleFactor, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALIGN_RIGHT | wx.ALL, 5)
         grid_sizer_4.Add(self.textCtrlScaleFactor, 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 0)
@@ -170,6 +205,7 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
     def __customProperties(self):
         """Custom properties for the panel."""
         self.structure = None
+        self.magStructure = None
         self.constraints = {}
         self.results = None
         self._row = 0
@@ -177,8 +213,9 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
         self._focusedText = None
         self._selectedCells = []
 
+
         self.lAtomConstraints = ['x','y','z',
-                                 'u11','u22','u33','u12','u13','u23','occ']
+                                 'u11','u22','u33','u12','u13','u23','occ','magnetic']
         # pdffit internal naming
         self.lConstraintsMap = {
                 'textCtrlA'             : 'lat(1)',
@@ -231,23 +268,54 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
 
     def refresh(self):
         """Refreshes widgets on the panel."""
+        print("Test")
+        print("is it true?")
+        print(self.structure.magnetism)
+        if self.structure.magnetism and self.notebook_phase.GetPageCount() == 3:
+            if self.structure.magnetism and self.notebook_phase.GetPageCount() == 3:
+                if self.structure.magStructure == None:
+                    self.structure.magStructure = MagStructure()
+                    self.structure.magStructure.corr = 0
+                    self.structure.magStructure.ord = 0
+                    self.structure.magStructure.para = 0
+                    self.structure.magnetic_atoms = [0]*len(self.structure)
+                    for i in range(len(self.structure.magnetic_atoms)):
+                        self.structure.magnetic_atoms[i] = [0, ""]
+            #magConf = MagConfigurePanel(self.notebook_phase)
+            #magConf.addPhaseGridRef(self.gridAtoms)
+            """magConst = MagConstraintsPanel(self.notebook_phase)
+            self.notebook_phase.InsertPage(
+                1, magConf, text="Magnetic Configure")
+            self.notebook_phase.InsertPage(
+                3, magConst, text="Magnetic Constraints")"""
+        elif not self.structure.magnetism and self.notebook_phase.GetPageCount() == 5:
+            self.notebook_phase.RemovePage(1)
+            self.notebook_phase.RemovePage(2)
         phasepanelutils.refreshTextCtrls(self)
         pairs = self.structure.getSelectedPairs()
         self.textCtrlIncludedPairs.SetValue(pairs)
+
         phasepanelutils.refreshGrid(self)
         self.restrictConstrainedParameters()
+        """Currently, the CMI engine does not support Windows"""
+        """rendering the workaround obsolete for now"""
         # wxpython 3.0 on Windows 7 prevents textCtrlA from receiving
         # left-click input focus and can be only focused with a Tab key.
         # This only happens for the first input, the text control behaves
         # normally after receiving focus once.
         # Workaround: do explicit focus here for the first rendering.
-        if self.__this_is_first_refresh:
+        """if self.__this_is_first_refresh:
             self.__this_is_first_refresh = False
-            focusowner = self.textCtrlA.FindFocus()
-            wx.CallAfter(self.textCtrlA.SetFocus)
+            focusowner = self.enableMag.FindFocus()
+            wx.CallAfter(self.enableMag.SetFocus)
             if focusowner is not None:
-                wx.CallAfter(focusowner.SetFocus)
+                wx.CallAfter(focusowner.SetFocus)"""
         return
+
+    def isMagnetism(self):
+        if self.structure.magnetism:
+            return True
+        return False
 
     def restrictConstrainedParameters(self):
         """Set 'read-only' boxes that correspond to constrained parameters."""
@@ -256,7 +324,7 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
         txtbg = self.textCtrlA.DefaultStyle.BackgroundColour
 
         # First the TextCtrls
-        for key, var in self.lConstraintsMap.iteritems():
+        for key, var in self.lConstraintsMap.items():
             textCtrl = getattr(self, key)
             if var in self.constraints:
                 textCtrl.SetEditable(False)
@@ -266,14 +334,14 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
                 tt.SetTip(self.constraints[var].formula)
             else:
                 textCtrl.SetEditable(True)
-                textCtrl.SetBackgroundColour(txtbg)
+                #textCtrl.SetBackgroundColour(txtbg)
+                textCtrl.SetBackgroundColour(wx.WHITE)
 
         # Now the grid
         rows = self.gridAtoms.GetNumberRows()
         cols = self.gridAtoms.GetNumberCols()
-
-        for i in xrange(rows):
-            for j in xrange(1, cols):
+        for i in range(rows):
+            for j in range(1, cols):
                 var = self.lAtomConstraints[j-1]
                 var += '(%i)'%(i+1)
                 if var in self.constraints:
@@ -328,6 +396,15 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
         except:
             return None
 
+    def randValidKey(self):
+        "generates a random key that is not in the magSpecies dictionary"
+        while True:
+            key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+            if key not in self.structure.magStructure.species:
+                break
+        return key
+
+
     def applyCellChange(self, i, j, value):
         """Update an atom according to a change in a cell.
 
@@ -369,7 +446,31 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
                 self.structure[i].U[1,2] = self.structure[i].U[2,1] = value # U(2,3)
             elif j == 10:
                 self.structure[i].occupancy = value # occupancy
+            elif j == 11:
+                if value != 1 and value != 0: raise ValueError
 
+                if value == 1 and self.structure.magnetic_atoms[i][1] == "":
+                    # if not a magSpecies (name = "" or not in dict), create and insert
+                    label = self.randValidKey()
+                    msp = MagSpecies(self.structure, strucIdxs=[i], label=label, rmaxAtoms=10, basisvecs=np.array([(0,0,1)]),
+                                    kvecs=np.array([(0,0,0)]))
+                    self.structure.magStructure.loadSpecies(msp)
+                    #self.structure.magStructure.makeAll()
+                    #self.structure.magStructure.makeSpecies(label=label)
+                    #print(self.structure.magStructure.atoms)
+                    #print(self.structure.magStructure.spins)
+                    #self.structure.magStructure.magSpecies[label].makeAtoms()
+                    #self.structure.magStructure.magSpecies[label].makeSpins()
+                    self.structure.magnetic_atoms[i] = [value,label]
+                    print("magStructure", self.structure.magStructure)
+                    print(len(self.structure.magStructure.species))
+
+                elif value == 0:
+                    # is val a magSpecies? if so, remove
+                    if self.structure.magStructure and self.structure.magnetic_atoms[i][1] in self.structure.magStructure.species:
+                        self.structure.magStructure.removeSpecies(label=self.structure.magnetic_atoms[i][1])
+                        self.structure.magnetic_atoms[i] = [value,""]
+                        print(len(self.structure.magStructure.species))
             self.mainFrame.needsSave()
             return value
 
@@ -379,6 +480,30 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
     ##########################################################################
     # Event Handlers
 
+    # CheckBox Events
+    """
+    def onCheck(self, event):
+        #Toggles magnetic setting visibility and creates magnetic structure
+        self.structure.magnetism = self.enableMag.GetValue()
+        if self.structure.magnetism and self.notebook_phase.GetPageCount() == 3:
+            if self.structure.magStructure == None:
+                self.structure.magStructure = MagStructure()
+                self.structure.magStructure.corr = 0
+                self.structure.magStructure.ord = 0
+                self.structure.magStructure.para = 0
+                self.structure.magnetic_atoms = [0]*len(self.structure)
+                for i in range(len(self.structure.magnetic_atoms)):
+                    self.structure.magnetic_atoms[i] = [0, ""]
+            magConf = MagConfigurePanel(self.notebook_phase, self.gridAtoms)
+            magConst = MagConstraintsPanel(self.notebook_phase)
+            self.notebook_phase.InsertPage(1, magConf, text="Magnetic Configure")
+            self.notebook_phase.InsertPage(3, magConst, text="Magnetic Constraints")
+        elif not self.structure.magnetism and self.notebook_phase.GetPageCount() == 5:
+            self.notebook_phase.RemovePage(1)
+            self.notebook_phase.RemovePage(2)
+        self.refresh()
+        event.Skip()
+    """
     # TextCtrl Events
     def onSetFocus(self, event):
         """Saves a TextCtrl value, to be compared in onKillFocus later."""
@@ -458,6 +583,9 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
         # NOTE: be careful with refresh(). It calls Grid.AutoSizeColumns, which
         # creates a EVT_GRID_CMD_CELL_CHANGED event, which causes a recursion
         # loop.
+        #if self.editAtoms is False:
+            #print("Can't edit")
+            #return
         i = event.GetRow()
         j = event.GetCol()
 
@@ -469,6 +597,15 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
         self.fillCells(value)
         self._focusedText = None
         return
+
+    """
+    def updateMagXYZ(self):
+        count = 0
+        magAtoms = []
+        for a in self.structure.magnetic_atoms:
+            if a[0] == 1:
+                magAtoms +=
+    """
 
     def fillCells(self, value):
         """Fill cells with a given value.
@@ -486,7 +623,6 @@ class PhaseConfigurePanel(wx.Panel, PDFPanel):
                 oldvalue = self._focusedText or self.gridAtoms.GetCellValue(i,j)
                 self._focusedText = None
                 newvalue = self.applyCellChange(i,j, value)
-                #print i, j, value, oldvalue, newvalue
                 if newvalue is None: newvalue = oldvalue
                 self.gridAtoms.SetCellValue(i,j,str(newvalue))
 

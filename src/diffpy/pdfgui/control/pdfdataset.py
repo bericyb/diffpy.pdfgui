@@ -35,8 +35,11 @@ class PDFDataSet(PDFComponent):
         drobs      -- list of standard deviations of robs
         dGobs      -- list of standard deviations of Gobs
         stype      -- scattering type, 'X' or 'N'
+        pctype     -- PDF calculator type, 'PC' or 'DPC', to use RealSpacePC
+                      or DebyePC.
         qmax       -- maximum value of Q in inverse Angstroms.  Termination
                       ripples are neglected for qmax=0.
+        qmin       -- minimum value of Q in inverse Angstroms.  Default qmin=0.
         qdamp      -- specifies width of Gaussian damping factor in pdf_obs due
                       to imperfect Q resolution
         qbroad     -- quadratic peak broadening factor related to dataset
@@ -56,7 +59,7 @@ class PDFDataSet(PDFComponent):
         refinableVars   -- set (dict) of refinable variable names.
     """
 
-    persistentItems = [ 'robs', 'Gobs', 'drobs', 'dGobs', 'stype', 'qmax',
+    persistentItems = [ 'robs', 'Gobs', 'drobs', 'dGobs', 'stype', 'pctype', 'qmax', 'qmin',
                      'qdamp', 'qbroad', 'dscale', 'rmin', 'rmax', 'metadata' ]
     refinableVars = dict.fromkeys(('qdamp', 'qbroad', 'dscale'))
 
@@ -77,6 +80,8 @@ class PDFDataSet(PDFComponent):
         self.dGobs = []
         self.stype = 'X'
         # user must specify qmax to get termination ripples
+        self.pctype = 'PC'
+        self.qmin = 0.0
         self.qmax = 0.0
         self.qdamp = 0.001
         self.qbroad = 0.0
@@ -130,8 +135,9 @@ class PDFDataSet(PDFComponent):
         returns self
         """
         try:
-            self.readStr(open(filename,'rb').read())
-        except PDFDataFormatError, err:
+            with open(filename) as fp:
+                self.readStr(fp.read())
+        except PDFDataFormatError as err:
             basename = os.path.basename(filename)
             emsg = ("Could not open '%s' due to unsupported file format " +
                 "or corrupted data. [%s]") % (basename, err)
@@ -215,7 +221,7 @@ class PDFDataSet(PDFComponent):
         if res:
             self.metadata['doping'] = float(res.groups()[0])
 
-        # parsing gerneral metadata
+        # parsing general metadata
         if metadata:
             regexp = r"\b(\w+)\ *=\ *(%(f)s)\b" % rx
             while True:
@@ -255,7 +261,7 @@ class PDFDataSet(PDFComponent):
                 self.drobs = len(self.robs) * [0.0]
             if not has_dGobs:
                 self.dGobs = len(self.robs) * [0.0]
-        except (ValueError, IndexError), err:
+        except (ValueError, IndexError) as err:
             raise PDFDataFormatError(err)
         self.rmin = self.robs[0]
         self.rmax = self.robs[-1]
@@ -271,9 +277,9 @@ class PDFDataSet(PDFComponent):
 
         No return value.
         """
-        bytes = self.writeStr()
+        txt = self.writeStr()
         f = open(filename, 'w')
-        f.write(bytes)
+        f.write(txt)
         f.close()
         return
 
@@ -308,7 +314,7 @@ class PDFDataSet(PDFComponent):
         # metadata
         if len(self.metadata) > 0:
             lines.append('# metadata')
-            for k, v in self.metadata.iteritems():
+            for k, v in self.metadata.items():
                 lines.append( "%s=%s" % (k,v) )
         # write data:
         lines.append('##### start data')
@@ -350,29 +356,5 @@ class PDFDataFormatError(Exception):
     """Exception class marking failure to proccess PDF data string.
     """
     pass
-
-
-# simple test code
-if __name__ == '__main__':
-    import sys
-    filename = sys.argv[1]
-    dataset = PDFDataSet("test")
-    dataset.read(filename)
-    print "== metadata =="
-    for k, v in dataset.metadata.iteritems():
-        print k, "=", v
-    print "== data members =="
-    for k, v in dataset.__dict__.iteritems():
-        if k in ('metadata', 'robs', 'Gobs', 'drobs', 'dGobs') or k[0] == "_":
-            continue
-        print k, "=", v
-    print "== robs Gobs drobs dGobs =="
-    for i in range(len(dataset.robs)):
-        print dataset.robs[i], dataset.Gobs[i], dataset.drobs[i], dataset.dGobs[i]
-    print "== writeStr() =="
-    print dataset.writeStr()
-    print "== datasetcopy.writeStr() =="
-    datasetcopy = dataset.copy()
-    print datasetcopy.writeStr()
 
 # End of file

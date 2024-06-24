@@ -13,11 +13,14 @@
 #
 ##############################################################################
 
+from __future__ import print_function
 
 import sys
 import os
 import threading
 import time
+import six
+import six.moves.cPickle as pickle
 
 from diffpy.pdfgui.control.pdflist import PDFList
 from diffpy.pdfgui.control.fitting import Fitting
@@ -28,6 +31,7 @@ from diffpy.pdfgui.control.fitstructure import FitStructure
 from diffpy.pdfgui.control.controlerrors import ControlError
 from diffpy.pdfgui.control.controlerrors import ControlFileError
 from diffpy.pdfgui.control.controlerrors import ControlTypeError
+from diffpy.pdfgui.utils import asunicode, quote_plain
 
 
 class PDFGuiControl:
@@ -72,12 +76,12 @@ class PDFGuiControl:
             while self.running:
                 try:
                     self.control.checkQueue()
-                except ControlError, error:
+                except ControlError as error:
                     gui = self.control.gui
                     if gui:
                         gui.postEvent(gui.ERROR, "<Queue exception> %s"%error.info)
                     else:
-                        print "<Queue exception> %s"%error.info
+                        print("<Queue exception> %s"%error.info)
                 # another check before go to sleep
                 if not self.running: break
                 time.sleep(1)
@@ -87,12 +91,11 @@ class PDFGuiControl:
         self.queueManager.setDaemon(True)
         self.queueManager.start()
 
-    def checkQueue(self):
+    def checkQueue(self, run = True):
         """find next fitting in the queue and start it"""
         if self.currentFitting:
             # wait for currentFitting
             self.currentFitting.join()
-
         # No fitting in the queue is running.
         try:
             self.lock.acquire()
@@ -104,7 +107,8 @@ class PDFGuiControl:
         finally:
             self.lock.release()
 
-        self.currentFitting.start()
+        if run is True:
+            self.currentFitting.start()
 
     def enqueue(self, fits, enter = True):
         """enqueue or dequeue fittings
@@ -118,7 +122,7 @@ class PDFGuiControl:
                 if enter:
                     try:
                         self.fittingQueue.index(fit)
-                        # if no exception, then it already in the queue,
+                        # if no exception, then it is already in the queue,
                         # continue to next
                         continue
                     except ValueError:
@@ -158,15 +162,15 @@ class PDFGuiControl:
         if self.queueManager.isAlive():
             self.queueManager.running = False
 
-    def newFitting(self, name, position=None):
+    def newFitting(self, name, mag, position=None):
         """insert a new instance of Fitting
 
         name      --  unique name for this Fitting
         position  --  where Fitting is inserted, default is last place
 
-        return: Fitting reference
+        return: Fitting referencefittingqueue
         """
-        fitting = Fitting(name)
+        fitting = Fitting(name, mag)
         self.add(fitting, position)
         return fitting
 
@@ -184,23 +188,24 @@ class PDFGuiControl:
 
         return calculation
 
-    def newStructure(self, targetID, name, position=None):
+    def newStructure(self, targetID, name, mag, position=None):
         """add blank structure to a Fitting
 
         targetID  --  reference to Fitting
         name      --  name of the new Structure
         position  --  where the structure is to be inserted, default is last
+        mag       --  Whether magnetism is enabled
 
         return: Structure reference
         """
         self.__validateType(targetID)
 
         # insert to target
-        struct = FitStructure(name)
+        struct = FitStructure(name, mag)
         targetID.add(struct, position)
         return struct
 
-    def loadStructure(self, targetID, filename, name = None, position=None):
+    def loadStructure(self, targetID, filename, mag, name = None, position=None):
         """add blank structure to a Fitting
 
         targetID  --  reference to Fitting
@@ -213,7 +218,7 @@ class PDFGuiControl:
             name = os.path.basename(filename)
 
         # insert to target
-        struct = FitStructure(name)
+        struct = FitStructure(name, mag)
         struct.initial.read(filename)
         targetID.add(struct, position)
         return struct
@@ -246,8 +251,7 @@ class PDFGuiControl:
         """
         if not isinstance(ID, Fitting) and \
            not isinstance(ID, Calculation):
-            raise ControlTypeError, "Can't add %s to list"%\
-                  self.__class__.__name__
+            raise ControlTypeError("Can't add %s to list" % self.__class__.__name__)
         if position is not None:
             self.fits.insert(position, ID)
         else:
@@ -268,8 +272,7 @@ class PDFGuiControl:
             try:
                 return ID.owner
             except AttributeError:
-                raise ControlTypeError, "Object %s doesn't exit in the list"\
-                                        %ID.name
+                raise ControlTypeError("Object %s doesn't exit in the list" % ID.name)
 
     def rename(self, ID, new_name):
         """rename Fitting, Calculation, Dataset or Structure
@@ -346,7 +349,7 @@ class PDFGuiControl:
                 pathDict = fileTree
                 for x in subs[:-1]:
                     # if no node has been created
-                    if not pathDict.has_key(x):
+                    if x not in pathDict:
                         pathDict[x] = {}
                     pathDict = pathDict[x]
 
@@ -358,8 +361,6 @@ class PDFGuiControl:
         self.projfile = projfile
         organizations = []
         import zipfile
-        from cPickle import PickleError
-        from diffpy.pdfgui.utils import quote_plain
 
         # IOError can be raised when reading invalid zipfile
         # check for file existence here.
@@ -376,17 +377,17 @@ class PDFGuiControl:
             if len(z.fileTree) == 0:
                 raise ControlFileError(emsg_invalid_file)
             # The first layer has only one folder
-            rootDict = z.fileTree.values()[0]
-            projName = z.fileTree.keys()[0]
+            rootDict = next(iter(z.fileTree.values()))
+            projName = next(iter(z.fileTree.keys()))
 
-            if rootDict.has_key('journal'):
-                self.journal = z.read(projName + '/journal').decode('utf8')
+            if 'journal' in rootDict:
+                self.journal = asunicode(z.read(projName + '/journal'))
 
             # all the fitting and calculations
             #NOTE: It doesn't hurt to keep backward compatibility
             # old test project may not have file 'fits'
-            if rootDict.has_key('fits'):
-                ftxt = z.read(projName + '/fits').decode('utf8')
+            if 'fits' in rootDict:
+                ftxt = asunicode(z.read(projName + '/fits'))
                 fitnames = ftxt.splitlines()
             else:
                 fitnames = [ x for x in rootDict.keys() if rootDict[x] is not None]
@@ -394,13 +395,13 @@ class PDFGuiControl:
             for name in fitnames:
                 if not name: # empty string
                     continue
-                fit = Fitting(name)
+                fit = Fitting(name, False)
                 # fitting name stored in rootDict should be quoted
                 rdname = quote_plain(name)
                 # but let's also handle old project files
                 if rdname not in rootDict:
                     rdname = name
-                if rootDict.has_key(rdname):
+                if rdname in rootDict:
                     org = fit.load(z, projName + '/' + rdname + '/')
                 else:
                     # it's simply a blank fitting, has no info in proj file yet
@@ -408,7 +409,7 @@ class PDFGuiControl:
                 organizations.append(org)
                 self.add(fit)
 
-        except (IOError, zipfile.error, PickleError):
+        except (IOError, zipfile.error, pickle.PickleError):
             raise ControlFileError(emsg_invalid_file)
 
         # close input file if opened
@@ -436,9 +437,7 @@ class PDFGuiControl:
 
         import zipfile
         import shutil
-        from cPickle import PickleError
         import tempfile
-        from diffpy.pdfgui.utils import quote_plain
 
         projbase = os.path.basename(self.projfile)
         projName = os.path.splitext(projbase)[0]
@@ -456,13 +455,13 @@ class PDFGuiControl:
                 fit.save(z, projName + '/' + quote_plain(fit.name) + '/')
                 fitnames.append(name)
             if self.journal:
-                z.writestr(projName + '/journal', self.journal.encode('utf8'))
+                z.writestr(projName + '/journal', asunicode(self.journal))
             ftxt = '\n'.join(fitnames)
-            z.writestr(projName + '/fits', ftxt.encode('utf8'))
+            z.writestr(projName + '/fits', asunicode(ftxt))
             z.close()
             shutil.copyfile(tmpfilename, self.projfile)
 
-        except (IOError, PickleError):
+        except (IOError, pickle.PickleError):
             emsg = "Error when writing to %s" % self.projfile
             raise ControlFileError(emsg)
 
@@ -492,8 +491,9 @@ class PDFGuiControl:
     def start(self, IDlist):
         """execute Calculations and Fittings in IDlist.
         """
+        print("start")
         self.redirectStdout()
-        fits = [ ID for ID in IDlist if isinstance(ID, Fitting) ]
+        fits = [ ID for ID in IDlist if isinstance(ID, Fitting) ] # Potential problem
         # only add calcs which is not in fits, because fits will automatically run calcs under it anyway
         calcs = [ ID for ID in IDlist if isinstance(ID, Calculation) and ID.owner not in fits]
         for calc in calcs:
@@ -511,18 +511,16 @@ class PDFGuiControl:
     def __validateType(self, targetID):
         """check if targetID is a Fitting class"""
         if not isinstance(targetID, Organizer):
-            raise ControlTypeError, "Can't insert to %s"%\
-                  self.__class__.__name__
+            raise ControlTypeError("Can't insert to %s" % self.__class__.__name__)
 
     def redirectStdout(self):
         """Redirect standard out.
 
-        This redirect engine output to cStringIO if not done yet.
+        This redirect engine output to StringIO if not done yet.
         """
         from diffpy.pdffit2 import redirect_stdout, output
         if output.stdout is sys.stdout:
-            import cStringIO
-            redirect_stdout(cStringIO.StringIO())
+            redirect_stdout(six.StringIO())
         return
 
     def getEngineOutput(self):
@@ -530,9 +528,22 @@ class PDFGuiControl:
         from diffpy.pdffit2 import output, redirect_stdout
         txt = output.stdout.getvalue()
         output.stdout.close()
-        import cStringIO
-        redirect_stdout(cStringIO.StringIO())
+        redirect_stdout(six.StringIO())
         return txt
+
+    #long
+    def getCMIOutput(self):
+        """Get the output from the CMI engine."""
+        txt = None
+        if self.currentFitting:
+            if self.currentFitting.cmiresults:
+                txt = self.currentFitting.cmiresults
+        return txt
+
+    def resetCMIOutput(self):
+        self.currentFitting.cmiresults = None
+        return
+    #end Long
 
 _pdfguicontrol = None
 def pdfguicontrol(*args, **kwargs):
@@ -555,9 +566,6 @@ def _find_global(moduleName, clsName):
     m = _importByName(moduleName,clsName)
     return m
 
-class _StaticMethod:
-    def __init__(self, func):
-        self.__call__ = func
 
 class CtrlUnpickler:
     '''Occasionally the project file may be generated on a platform where
@@ -566,23 +574,17 @@ class CtrlUnpickler:
     be safely loaded. Only constraints and parameters need this class to un-
     pickle.
     '''
+    @staticmethod
     def loads(s):
-        import cPickle
         try:
-            return cPickle.loads(s)
-        except ImportError,err:
+            return pickle.loads(s)
+        except ImportError as err:
             missedModule = str(err).split(' ')[-1]
             if missedModule.find('pdfgui.control') == -1:
                 raise err
-            try:
-                from cStringIO import StringIO
-            except ImportError:
-                from StringIO import StringIO
-            f = StringIO(s)
-            unpickler = cPickle.Unpickler(f)
+            f = six.StringIO(s)
+            unpickler = pickle.Unpickler(f)
             unpickler.find_global = _find_global
             return unpickler.load()
-    loads = _StaticMethod(loads)
-
 
 # End of file

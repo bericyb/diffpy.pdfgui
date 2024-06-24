@@ -18,12 +18,18 @@
 
 import copy
 import math
-import types
+import numpy as np
 
+from diffpy.pdfgui.control.mpdfcalculator import MPDFcalculator
 from diffpy.pdfgui.control.controlerrors import ControlConfigError
 from diffpy.pdfgui.control.controlerrors import ControlKeyError
 from diffpy.pdfgui.control.controlerrors import ControlValueError
 from diffpy.pdfgui.control.pdfcomponent import PDFComponent
+from diffpy.pdfgui.utils import safeCPickleDumps, pickle_loads
+
+from diffpy.srreal.pdfcalculator import PDFCalculator, DebyePDFCalculator
+from diffpy.srreal.structureadapter import nometa
+
 
 class Calculation(PDFComponent):
     """Perform a theoretical computation of PDF from model structure.
@@ -38,8 +44,11 @@ class Calculation(PDFComponent):
     rcalc  -- list of r values, this is set after calculation is finished
     Gcalc  -- list of calculated G values
     stype  -- scattering type, 'X' or 'N'
+    pctype -- PDF calculator type, 'PC' or 'DPC', to use RealSpacePC
+              or DebyePC.
     qmax   -- maximum value of Q in inverse Angstroms.  Termination ripples
               are ignored for qmax=0.
+    qmin   -- minimum value of Q in inverse Angstroms.  Default qmin=0.
     qdamp  -- specifies width of Gaussian damping factor in pdf_obs due
               to imperfect Q resolution
     qbroad -- quadratic peak broadening factor related to dataset
@@ -62,8 +71,10 @@ class Calculation(PDFComponent):
         self.rcalc = []
         self.Gcalc = []
         self.stype = 'X'
+        self.pctype = 'PC' # default use PDF real space calculator
         # user must specify qmax to get termination ripples
         self.qmax = 0.0
+        self.qmin = 0.0
         self.qdamp = 0.001
         self.qbroad = 0.0
         self.spdiameter = None
@@ -122,7 +133,7 @@ class Calculation(PDFComponent):
         from diffpy.pdfgui.control.fitting import getEngineExceptions,handleEngineException
         try:
             self.calculate()
-        except getEngineExceptions(), error:
+        except getEngineExceptions() as error:
             gui = self.owner.controlCenter.gui
             handleEngineException(error, gui)
 
@@ -134,7 +145,137 @@ class Calculation(PDFComponent):
         return
 
     def calculate(self):
-        """do the real calculation
+        """
+        Perform calculation in diffpy.srreal
+        """
+        # clean up old results
+        self.rcalc = []
+        self.Gcalc = []
+
+        # do the job
+        if len(self.owner.strucs) == 0:
+            raise ControlConfigError("No structure is given for calculation")
+        # make sure parameters are initialized
+        self.owner.updateParameters()
+
+        # initialize the calculator
+
+        #Initialize the mag calc
+        mc = MPDFcalculator()
+
+        if self.pctype == 'PC': # use PDFCalculator
+            pc = PDFCalculator()
+        elif self.pctype == 'DPC': # use DebyePDFCalculator
+            pc = DebyePDFCalculator()
+        # x-ray or neutron, PC default x-ray
+        if self.stype == 'N':
+            pc.scatteringfactortable = "neutron"
+
+        pc.qmax = self.qmax
+        pc.qmin = self.qmin
+        pc.qdamp = self.qdamp
+        pc.qbroad = self.qbroad
+        pc.rmin = self.rmin
+        pc.rmax = self.rmax
+        pc.rstep = self.rstep
+        pc.scale = self.dscale
+
+        mc.qmax = self.qmax
+        mc.qmin = self.qmin
+        mc.qdamp = self.qdamp
+        mc.qbroad = self.qbroad
+        mc.rmin = self.rmin
+        mc.rmax = self.rmax
+        mc.rstep = self.rstep
+        #mc.scale = self.dscale
+
+        # load structure and disable metadata using the nometa function
+        # and set any calculator attributes as needed as above
+        r_list = []
+        g_list = []
+
+        rMag_list = []
+        frMag_list = []
+        isMagnetic = False
+        list_size = 0
+
+        self.owner.applyParameters()
+        for struc in self.owner.strucs:
+            # pc is for one calculation. the common setting
+            # pc_temp is for each phase, specific setting
+            rMag, frMag = 0, 0
+            if struc.magnetism is True and len(struc.magStructure.species) > 0:
+                isMagnetic = True
+                struc.magStructure.makeAll()
+                mc.magstruc = struc.magStructure
+                mc.ordScale = struc.mpdffit['ordScale']
+                mc.paraScale = struc.mpdffit['paraScale']
+                rMag, frMag = mc.calc(normalized=struc.magStructure.normalized)
+                if len(rMag) > list_size:
+                    list_size = len(rMag)
+            rMag_list.append(rMag)
+            frMag_list.append(frMag)
+
+            pc_temp = pc.copy()
+            pc_temp.delta1 = struc.getvar('delta1')
+            pc_temp.delta2 = struc.getvar('delta2')
+            if struc.getvar('spdiameter'):
+                pc_temp.addEnvelope('sphericalshape')
+                pc_temp.spdiameter = struc.getvar('spdiameter')
+            if struc.getvar('stepcut'):
+                pc_temp.addEnvelope('stepcut')
+                pc_temp.stepcut = struc.getvar('stepcut')
+
+            ##TODO: pair mask. the baseline is not correct with PDFFIT.
+            struc.applyCMIPairSelection(pc_temp)
+            # pc_temp.setTypeMask("Ni","O",True)
+
+            r, g = pc_temp(nometa(struc))
+            #if struc.getvar('pscale'):
+            g = g * struc.getvar('pscale')
+
+            r_list.append(r)
+            g_list.append(g)
+
+        # get results
+
+        self.rcalc = r_list[0].tolist()  # r0, r1, r2 are the same, so just use r0
+
+        if isMagnetic is True:
+            for i in range(len(rMag_list)):
+                if isinstance(rMag_list[i], int):
+                    rMag_list[i] = np.zeros(list_size)
+                if isinstance(frMag_list[i], int):
+                    frMag_list[i] = np.zeros(list_size)
+        if isinstance(rMag, int):
+            rMag = np.zeros(list_size)
+        if isinstance(frMag, int):
+            frMag = np.zeros(list_size)
+
+        if isMagnetic is True and len(rMag_list) > 0:
+            #print(type(rMag))
+            #print(type(self.rcalc))
+            sizeDifference = len(rMag)-len(self.rcalc)
+            if sizeDifference > 0: # If rMag has a larger size than rcalc, all mag elements are shrunk
+                for i in range(len(rMag_list)):
+                    rMag_list[i] = rMag_list[i][:-sizeDifference]
+                    print(type(frMag_list[i]))
+                    frMag_list[i] = frMag_list[i][:-sizeDifference]
+            elif sizeDifference < 0: # If rcalc has a larger size than rMag, all atomic elements are shrunk
+                for i in range (len(r_list)):
+                    r_list[i] = r_list[i][:-sizeDifference]
+                    g_list[i] = g_list[i][:-sizeDifference]
+
+        # sum up multi-phase PDFs
+        gsum = 0
+        for i in range(len(self.owner.strucs)):
+            gsum += ((g_list[i] + frMag_list[i]) * self.dscale)
+        self.Gcalc = gsum.tolist()
+
+        return
+
+    def calculate_pdffit(self):
+        """do the real calculation in PDFFIT
         """
         # clean up old results
         self.rcalc = []
@@ -153,7 +294,7 @@ class Calculation(PDFComponent):
         for struc in self.owner.strucs:
             server.read_struct_string(struc.writeStr('pdffit'))
             for key,var in struc.constraints.items():
-                server.constrain(key.encode('ascii'), var.formula.encode('ascii'))
+                server.constrain(key, var.formula)
 
         # set up dataset
         server.alloc(self.stype, self.qmax, self.qdamp,
@@ -192,9 +333,9 @@ class Calculation(PDFComponent):
 
         No return value.
         """
-        bytes = self.writeStr()
+        txt = self.writeStr()
         f = open( filename, 'w' )
-        f.write(bytes)
+        f.write(txt)
         f.close()
         return
 
@@ -216,6 +357,11 @@ class Calculation(PDFComponent):
             lines.append('stype=X  x-ray scattering')
         elif self.stype == 'N':
             lines.append('stype=N  neutron scattering')
+        # pctype
+        if self.pctype == 'PC':
+            lines.append('pctype=PC  real space PDF calculator')
+        elif self.pctype == 'DPC':
+            lines.append('pctype=DPC  Debye PDF calculator')
         # dscale
         if self.dscale:
             lines.append('dscale=%g' % self.dscale)
@@ -225,8 +371,14 @@ class Calculation(PDFComponent):
         else:
             qmax_line = 'qmax=%.2f' % self.qmax
         lines.append(qmax_line)
+        # qmin
+        if self.qmin == 0:
+            qmin_line = 'qmin=0'
+        else:
+            qmin_line = 'qmin=%.2f' % self.qmin
+        lines.append(qmin_line)
         # qdamp
-        if type(self.qdamp) is types.FloatType:
+        if isinstance(self.qdamp, float):
             lines.append('qdamp=%g' % self.qdamp)
         # qbroad
         if self.qbroad:
@@ -248,8 +400,7 @@ class Calculation(PDFComponent):
 
         returns a tree of internal hierachy
         """
-        import cPickle
-        config = cPickle.loads(z.read(subpath + 'config'))
+        config = pickle_loads(z.read(subpath + 'config'))
         self.rmin = config['rmin']
         self.rstep = config['rstep']
         self.rmax = config['rmax']
@@ -257,7 +408,9 @@ class Calculation(PDFComponent):
         self.rcalc = config['rcalc']
         self.Gcalc = config['Gcalc']
         self.stype = config['stype']
+        self.pctype = config['pctype']
         self.qmax = config['qmax']
+        self.qmin = config['qmin']
         self.qdamp = config.get('qdamp', config.get('qsig'))
         self.qbroad = config.get('qbroad', config.get('qalp', 0.0))
         self.spdiameter = config.get('spdiameter')
@@ -270,7 +423,6 @@ class Calculation(PDFComponent):
         z       -- zipped project file
         subpath -- path to its own storage within project file
         """
-        from diffpy.pdfgui.utils import safeCPickleDumps
         config = {
             'rmin' : self.rmin,
             'rstep' : self.rstep,
@@ -279,7 +431,9 @@ class Calculation(PDFComponent):
             'rcalc' : self.rcalc,
             'Gcalc' : self.Gcalc,
             'stype' : self.stype,
+            'pctype' : self.pctype,
             'qmax' : self.qmax,
+            'qmin' : self.qmin,
             'qdamp' : self.qdamp,
             'qbroad' : self.qbroad,
             'dscale' : self.dscale,
@@ -300,7 +454,7 @@ class Calculation(PDFComponent):
         # rcalc and Gcalc may be assigned, they get replaced by new lists
         # after every calculation
         assign_attributes = ( 'rmin', 'rstep', 'rmax', 'rlen',
-                'rcalc', 'Gcalc', 'stype', 'qmax', 'qdamp',
+                'rcalc', 'Gcalc', 'stype', 'pctype', 'qmax', 'qmin', 'qdamp',
                 'qbroad', 'dscale', )
         copy_attributes = ( )
         for a in assign_attributes:

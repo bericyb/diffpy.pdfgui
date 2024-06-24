@@ -58,7 +58,7 @@ class FitStructure(PDFStructure):
     # evaluation of sorted_standard_space_groups deferred when necessary
     sorted_standard_space_groups = []
 
-    def __init__(self, name, *args, **kwargs):
+    def __init__(self, name, mag, *args, **kwargs):
         """Initialize FitDataSet.
 
         name         -- name of the data set.  The same name is used for
@@ -70,10 +70,17 @@ class FitStructure(PDFStructure):
         # self.initial deliberately not assigned,
         # it gets mapped to self by __getattr__
         self.refined = None
+        self.magnetism = mag
+        self.magnetic_atoms = []
+        self.magStructure = None
         self.constraints = {}
         self.selected_pairs = "all-all"
         self.initial.pdffit['sgoffset'] = [0.0, 0.0, 0.0]
         self.custom_spacegroup = None
+        self.isNormalized = True
+        self.mPDFStruc = None
+        self.mpdffit = {'ordScale': 1.0, 'paraScale': 1.0}
+
         return
 
 
@@ -143,7 +150,7 @@ class FitStructure(PDFStructure):
         if name == "initial":
             value = self
         else:
-            emsg = "A instance has no attribute '%s'" % name
+            emsg = "An instance has no attribute '%s'" % name
             raise AttributeError(emsg)
         return value
 
@@ -180,13 +187,13 @@ class FitStructure(PDFStructure):
         returns dictionary of indices and Parameter instances
         """
         foundpars = {}
-        for var, con in self.constraints.iteritems():
+        for var, con in self.constraints.items():
             con.guess(self.initial.getvar(var))
-            for pidx, pguess in con.parguess.iteritems():
-                # skip if already found
+            for pidx, pguess in con.parguess.items():
+                    # skip if already found
                 if pidx in foundpars:
                     continue
-                # insert to foundpars otherwise
+                    # insert to foundpars otherwise
                 if pguess is not None:
                     foundpars[pidx] = Parameter(pidx, initial=pguess)
                 else:
@@ -201,13 +208,13 @@ class FitStructure(PDFStructure):
         """
         # convert values to floats
         parvalues = { }
-        for pidx, par in parameters.iteritems():
+        for pidx, par in parameters.items():
             if isinstance(par, Parameter):
                 parvalues[pidx] = par.initialValue()
             else:
                 parvalues[pidx] = float(par)
         # evaluate constraints
-        for var, con in self.constraints.iteritems():
+        for var, con in self.constraints.items():
             self.initial.setvar(var, con.evalFormula(parvalues))
         return
 
@@ -237,7 +244,7 @@ class FitStructure(PDFStructure):
         rv = {}
         # atom variable pattern
         avpat = re.compile(r'^([xyz]|occ|u11|u22|u33|u12|u13|u23)\((\d+)\)')
-        for var in self.constraints.keys():
+        for var in list(self.constraints.keys()):
             m = avpat.match(var)
             if not m:   continue
             barevar = m.group(1)
@@ -258,7 +265,7 @@ class FitStructure(PDFStructure):
             # there are some constraints for atom a
             siteindex = i + 1
             cnts = acd[a]
-            for barevar, con in cnts.iteritems():
+            for barevar, con in cnts.items():
                 var = barevar + "(%i)" % siteindex
                 self.constraints[var] = con
         return
@@ -277,6 +284,10 @@ class FitStructure(PDFStructure):
             a.anisotropy = True
         # workaround ends here.
         self.initial[index:index] = atomlist
+        mag_insert = [0]*len(atomlist)
+        for i in range(len(mag_insert)):
+            mag_insert[i] = [0,""]
+        self.magnetic_atoms = self.magnetic_atoms[:index] + mag_insert + self.magnetic_atoms[index:]
         self._restoreAtomConstraints(acd)
         return
 
@@ -287,11 +298,10 @@ class FitStructure(PDFStructure):
         """
         acd = self._popAtomConstraints()
         # get unique, reverse sorted indices
-        ruindices = dict.fromkeys(indices).keys()
-        ruindices.sort()
-        ruindices.reverse()
+        ruindices = sorted(set(indices), reverse=True)
         for i in ruindices:
             self.initial.pop(i)
+            del(self.magnetic_atoms[i])
         self._restoreAtomConstraints(acd)
         return
 
@@ -325,7 +335,7 @@ class FitStructure(PDFStructure):
                 if a not in acd:    continue
                 # add empty constraint dictionary for duplicate atom
                 acd[adup] = {}
-                for barevar, con in acd[a].iteritems():
+                for barevar, con in acd[a].items():
                     formula = con.formula
                     if barevar in ("x", "y", "z"):
                         symidx = "xyz".index(barevar)
@@ -427,9 +437,7 @@ class FitStructure(PDFStructure):
         from diffpy.structure.symmetryutilities import ExpandAsymmetricUnit
         acd = self._popAtomConstraints()
         # get unique, reverse sorted indices
-        ruindices = dict.fromkeys(indices).keys()
-        ruindices.sort()
-        ruindices.reverse()
+        ruindices = sorted(set(indices), reverse=True)
         coreatoms = [self.initial[i] for i in ruindices]
         corepos = [a.xyz for a in coreatoms]
         coreUijs = [a.U for a in coreatoms]
@@ -481,12 +489,11 @@ class FitStructure(PDFStructure):
         from diffpy.structure.symmetryutilities import SymmetryConstraints
         # get unique sorted indices
         tobeconstrained = dict.fromkeys(indices)
-        uindices = tobeconstrained.keys()
-        uindices.sort()
+        uindices = sorted(tobeconstrained.keys())
         # remove old constraints
         pospat = re.compile(r'^([xyz])\((\d+)\)')
         Uijpat = re.compile(r'^(u11|u22|u33|u12|u13|u23)\((\d+)\)')
-        for var in self.constraints.keys():
+        for var in list(self.constraints.keys()):
             mpos = posflag and pospat.match(var)
             mUij = Uijflag and Uijpat.match(var)
             if mpos and (int(mpos.group(2)) - 1) in tobeconstrained:
@@ -531,7 +538,7 @@ class FitStructure(PDFStructure):
                     self.constraints[var] = Constraint(formula)
         # update parameter values in parent Fitting
         self.owner.updateParameters()
-        for pidx, pvalue in newparvalues.iteritems():
+        for pidx, pvalue in newparvalues.items():
             parobj = self.owner.parameters[pidx]
             parobj.setInitial(pvalue)
         # and finally remember this space group
@@ -626,6 +633,25 @@ class FitStructure(PDFStructure):
             server.selectAtomIndex(phaseidx, 'j', idx, jflag)
         return
 
+    def applyCMIPairSelection(self, pc):
+        """Apply pair selection for CMI calculations of partial PDF.
+
+        pc   -- instance of CMI PDFCalculator engine
+        """
+        psf = self.getPairSelectionFlags()
+        # to begin masking, first remove ALL
+        pc.setTypeMask("all", "all", False)
+        #option1: mask by site index. has problem
+        # for i, iflag in enumerate(psf['firstflags']):
+        #     for j, jflag in enumerate(psf['secondflags']):
+        #         print("i, iflag", i, iflag)
+        #         print("j, jflag", j, jflag)
+        #         pc.setPairMask(i, j, (iflag and jflag))
+        #option2: mask by element type
+        firstelement = str(psf['fixed_pair_string'].split("-")[0])
+        secondelement = str(psf['fixed_pair_string'].split("-")[1])
+        pc.setTypeMask(firstelement, secondelement, True)
+        return
 
     def getSelectedIndices(self, s):
         '''Indices of the atoms that match the specified selection string.
@@ -637,7 +663,7 @@ class FitStructure(PDFStructure):
         Return a list of integers.
         Raise ControlValueError for invalid selection string format.
         '''
-        s1 = filter(lambda c: not c.isspace(), s)
+        s1 = ''.join(c for c in s if not c.isspace())
         words = s1.split(',')
         indices = set()
         for w in words:
@@ -723,7 +749,7 @@ class FitStructure(PDFStructure):
         """
         # check arguments
         if other is None:
-            other = FitStructure(self.name)
+            other = FitStructure(self.name, self.magnetism)
         elif not isinstance(other, PDFStructure):
             emsg = "other must be PDFStructure or FitStructure"
             raise ControlTypeError(emsg)
@@ -747,16 +773,19 @@ class FitStructure(PDFStructure):
         subpath -- path to its own storage within project file
         """
         #subpath = projname/fitname/structure/myname/
+        from diffpy.pdfgui.utils import asunicode
         from diffpy.pdfgui.control.pdfguicontrol import CtrlUnpickler
         subs = subpath.split('/')
         rootDict = z.fileTree[subs[0]][subs[1]][subs[2]][subs[3]]
-        self.initial.readStr(z.read(subpath+'initial'), 'pdffit')
+        strudata = asunicode(z.read(subpath + 'initial'))
+        self.initial.readStr(strudata, 'pdffit')
         # refined
-        if rootDict.has_key('refined'):
+        if 'refined' in rootDict:
             self.refined = PDFStructure(self.name)
-            self.refined.readStr(z.read(subpath+'refined'), 'pdffit')
+            refdata = asunicode(z.read(subpath + 'refined'))
+            self.refined.readStr(refdata, 'pdffit')
         # constraints
-        if rootDict.has_key('constraints'):
+        if 'constraints' in rootDict:
             self.constraints = CtrlUnpickler.loads(z.read(subpath+'constraints'))
             translate = { 'gamma' : 'delta1',
                           'delta' : 'delta2',
@@ -765,17 +794,17 @@ class FitStructure(PDFStructure):
                 if old in self.constraints:
                     self.constraints[new] = self.constraints.pop(old)
         # selected_pairs
-        if rootDict.has_key("selected_pairs"):
-            self.selected_pairs = z.read(subpath+'selected_pairs')
+        if "selected_pairs" in rootDict:
+            self.selected_pairs = asunicode(z.read(subpath+'selected_pairs'))
         # sgoffset
-        if rootDict.has_key("sgoffset"):
-            sgoffsetstr = z.read(subpath+'sgoffset')
+        if "sgoffset" in rootDict:
+            sgoffsetstr = asunicode(z.read(subpath+'sgoffset'))
             sgoffset = [float(w) for w in sgoffsetstr.split()]
             self.initial.pdffit['sgoffset'] = sgoffset
         # custom_spacegroup
-        if rootDict.has_key("custom_spacegroup"):
-            bytes = z.read(subpath+'custom_spacegroup')
-            self.custom_spacegroup = CtrlUnpickler.loads(bytes)
+        if "custom_spacegroup" in rootDict:
+            spkl = z.read(subpath+'custom_spacegroup')
+            self.custom_spacegroup = CtrlUnpickler.loads(spkl)
         return
 
     def save(self, z, subpath):
@@ -789,16 +818,16 @@ class FitStructure(PDFStructure):
         if self.refined:
             z.writestr(subpath+'refined', self.refined.writeStr('pdffit'))
         if self.constraints:
-            bytes = safeCPickleDumps(self.constraints)
-            z.writestr(subpath+'constraints', bytes)
+            spkl = safeCPickleDumps(self.constraints)
+            z.writestr(subpath+'constraints', spkl)
         z.writestr(subpath+'selected_pairs', self.selected_pairs)
         # sgoffset
         sgoffset = self.initial.pdffit.get('sgoffset', [0.0, 0.0, 0.0])
         sgoffsetstr = "%g %g %g" % tuple(sgoffset)
         z.writestr(subpath+'sgoffset', sgoffsetstr)
         if self.custom_spacegroup:
-            bytes = safeCPickleDumps(self.custom_spacegroup)
-            z.writestr(subpath+'custom_spacegroup', bytes)
+            spkl = safeCPickleDumps(self.custom_spacegroup)
+            z.writestr(subpath+'custom_spacegroup', spkl)
         return
 
     def getYNames(self):
@@ -806,7 +835,7 @@ class FitStructure(PDFStructure):
 
         returns a name str list
         """
-        return self.constraints.keys()
+        return list(self.constraints.keys())
 
     def getXNames(self):
         """get names of data item which can be plotted as x

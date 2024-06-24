@@ -24,11 +24,12 @@ Exceptions:
 
 import wx
 import re
-import cPickle
+import base64
 
 from diffpy.pdfgui.gui.pdfguiglobals import iconpath
 from diffpy.pdfgui.control.fitting import Fitting
 from diffpy.pdfgui.control.controlerrors import ControlError
+from diffpy.pdfgui.utils import safeCPickleDumps, pickle_loads
 from diffpy.pdfgui.gui.wxextensions import wx12
 
 class FitTree(wx12.TreeCtrl):
@@ -281,7 +282,7 @@ class FitTree(wx12.TreeCtrl):
         nodetype = self.GetNodeType(node)
         if nodetype != 'fit':
             message = 'Node type %s does not hold its own data' % nodetype
-            raise FitTreeError, message
+            raise FitTreeError(message)
 
         self.GetTreeItemDict(node)['cdata'] = data
         return
@@ -308,7 +309,7 @@ class FitTree(wx12.TreeCtrl):
             return pdata.getCalculation(pos)
         else:
             message = "Node of type %s does not exist" % nodetype
-            raise FitTreeError, message
+            raise FitTreeError(message)
         return
 
     def AddFit(self, fitname = "Fit 1", cdata = None, paste = False):
@@ -320,13 +321,18 @@ class FitTree(wx12.TreeCtrl):
                         then the control is asked to create new data.
         paste       --  Whether or not the cdata is being pasted from another
                         node (default False).
+        magnetism   --  Whether magnetism features are enabled or disabled.
 
         Returns the id of the new node.
         """
+
+        #Try having an option for adding a magnetic fit and adding a regular fit perhaps?
+
         # Name the fit, but check to not duplicate names.
         fits = self.GetChildren(self.root)
-        names = map(self.GetItemText, fits)
+        names = [self.GetItemText(f) for f in fits]
         fitname = incrementName(fitname, names)
+        magnetism = False
 
         newfit = self.AppendItem(self.root, fitname)
         self.SetNodeType(newfit, 'fit')
@@ -336,7 +342,7 @@ class FitTree(wx12.TreeCtrl):
         try:
             # Set the node data for the new node
             if cdata is None:
-                cdata = self.control.newFitting(fitname, pos)
+                cdata = self.control.newFitting(fitname, magnetism, pos)
             elif paste:
                 cdata = self.control.paste(cdata, None, fitname, pos)
             self.SetControlData(newfit, cdata)
@@ -377,7 +383,7 @@ class FitTree(wx12.TreeCtrl):
         nodetype = self.GetNodeType(node)
         if nodetype != "fit":
             message = "Can only add a phase as a child of a fit."
-            raise FitTreeError, message
+            raise FitTreeError(message)
 
         if insertafter is not None:
             afttype = self.GetNodeType(insertafter)
@@ -400,17 +406,18 @@ class FitTree(wx12.TreeCtrl):
         # Set the control data to the new phase
         pdata = self.GetControlData(node)
         pos = self.GetPositionInSubtree(newphase)
+        mag = pdata.magnetism
 
         # Try to get/make the node data from the control. If it doesn't work,
         # then delete the new node.
         try:
             if makedata:
                 if filename is None:
-                    self.control.newStructure(pdata, label, pos)
+                    self.control.newStructure(pdata, label, mag, pos)
                 else:
-                    self.control.loadStructure(pdata, filename, label, pos)
-
+                    self.control.loadStructure(pdata, filename, mag, label, pos)
             elif cdata is not None:
+                """QUESTION: what is the paste method used for?"""
                 self.control.paste(cdata, pdata, label, pos)
             return newphase
         except:
@@ -448,7 +455,7 @@ class FitTree(wx12.TreeCtrl):
         nodetype = self.GetNodeType(node)
         if nodetype != "fit":
             message = "Can only add a data set as a child of a fit."
-            raise FitTreeError, message
+            raise FitTreeError(message)
 
         if insertafter is not None:
             afttype = self.GetNodeType(node)
@@ -475,7 +482,7 @@ class FitTree(wx12.TreeCtrl):
                 if filename is not None:
                     self.control.loadDataset(pdata, filename, label, pos)
                 else:
-                    raise FitTreeError, "Cannot load a dataset without a name!"
+                    raise FitTreeError("Cannot load a dataset without a name!")
             elif cdata is not None:
                 self.control.paste(cdata, pdata, label, pos)
             return newset
@@ -512,7 +519,7 @@ class FitTree(wx12.TreeCtrl):
         nodetype = self.GetNodeType(node)
         if nodetype != "fit":
             message = "Can only add a calculation as a child of a fit."
-            raise FitTreeError, message
+            raise FitTreeError(message)
 
         if insertafter is not None:
             afttype = self.GetNodeType(node)
@@ -520,7 +527,7 @@ class FitTree(wx12.TreeCtrl):
                 insertafter = None
 
         sibs = self.GetCalculations(node)
-        names = map(self.GetItemText, sibs)
+        names = [self.GetItemText(sb) for sb in sibs]
         label = incrementName(label, names)
 
         if insertafter:
@@ -556,12 +563,14 @@ class FitTree(wx12.TreeCtrl):
         if isinstance(cdata, Fitting):
             cdata = cdata.stripped()
         cdata.type = nodetype
-        cdatastring = cPickle.dumps(cdata)
-        cdatastring = "pdfgui_cliboard=" + cdatastring
+        cdatabytes = safeCPickleDumps(cdata)
+        cdatabytes = "pdfgui_cliboard=" + cdatabytes
+        #wxpython only accepts str, use base64 to convert bytes to str
+        cdatastring = base64.b64encode(cdatabytes)
         textdata = wx.TextDataObject(cdatastring)
         if not wx.TheClipboard.IsOpened():
             opened = wx.TheClipboard.Open()
-            if not opened: raise FitTreeError, "Cannot open the clipboard."
+            if not opened: raise FitTreeError("Cannot open the clipboard.")
         wx.TheClipboard.SetData(textdata)
         wx.TheClipboard.Close()
         return
@@ -586,17 +595,15 @@ class FitTree(wx12.TreeCtrl):
         cdatastring = textdata.GetText()
 
         cdata = None
-        if cdatastring[:16] == "pdfgui_cliboard=":
-            cdatastring = cdatastring[16:]
-            try:
-                cdata = cPickle.loads(str(cdatastring))
-            except:
-                pass
+        # use base64 to convert str back to bytes
+        try:
+            cdatabytes = base64.b64decode(cdatastring.encode())
 
-        #try:
-        #    cdata = cPickle.loads(str(cdatastring))
-        #except (cPickle.UnpicklingError, UnicodeEncodeError, EOFError):
-        #    cdata = None
+            if cdatabytes[:16] == b'pdfgui_cliboard=':
+                cdatabytes = cdatabytes[16:]
+                cdata = pickle_loads(cdatastring)
+        except:
+            pass
         return cdata
 
     def PasteBranch(self, entrypoint = None):
@@ -629,7 +636,7 @@ class FitTree(wx12.TreeCtrl):
         cdata = self.GetClipboard()
         if cdata is None:
             message = "There is no branch to paste!"
-            raise FitTreeError, message
+            raise FitTreeError(message)
 
         # Now we have the cdata, we must put it into the tree
         branchtype = cdata.type
@@ -657,7 +664,7 @@ class FitTree(wx12.TreeCtrl):
                 insertafter = entrypoint
                 entrypoint = self.root
             else: # Just in case
-                raise FitTreeError, "Cannot paste a fit branch here."
+                raise FitTreeError("Cannot paste a fit branch here.")
 
         if branchtype == "phase":
             # Paste after selected phase, or append to the end of the phase
@@ -682,7 +689,7 @@ class FitTree(wx12.TreeCtrl):
                     # Put the branch at the beginning of the phases
                     prepend = True
             else: # Just in case
-                raise FitTreeError, "Cannot paste a phase branch here."
+                raise FitTreeError("Cannot paste a phase branch here.")
 
         if branchtype == "dataset":
             # Paste after a selected dataset, or into a selected fit.
@@ -705,7 +712,7 @@ class FitTree(wx12.TreeCtrl):
                 # the calculations.
                 pass
             else:
-                raise FitTreeError, "Cannot paste a data set branch here."
+                raise FitTreeError("Cannot paste a data set branch here.")
 
         if branchtype == "calculation":
             # Paste after the selected calculation or after the calculations.
@@ -720,7 +727,7 @@ class FitTree(wx12.TreeCtrl):
             elif entrytype == "fit":
                 insertafter = self.GetLastDataSet(entrypoint)
             else: # Just in case
-                raise FitTreeError, "Cannot paste a calculation branch here."
+                raise FitTreeError("Cannot paste a calculation branch here.")
 
 
         # Now set the name of the item to be inserted.
@@ -737,8 +744,8 @@ class FitTree(wx12.TreeCtrl):
         # Append "_copy" to the end of the label, unless it already has that.
         # In that case, just add a number to indicate which copy it is.
         siblings = self.GetChildren(entrypoint)
-        labels = map(self.GetItemText, siblings)
-        match = "_copy\d*$"
+        labels = [self.GetItemText(sb) for sb in siblings]
+        match = r"_copy\d*$"
         label = re.sub(match, '', oldlabel)
         label += "_copy"
         label = incrementName(label, labels)
@@ -761,7 +768,7 @@ class FitTree(wx12.TreeCtrl):
         """
         if cdata is None:
             message = "There is no branch to paste!"
-            raise FitTreeError, message
+            raise FitTreeError(message)
 
         branchtype = cdata.type
         #cdata.name = label
@@ -779,7 +786,7 @@ class FitTree(wx12.TreeCtrl):
             newnode = self.AddCalc(entrypoint, label, insertafter=insertafter,
                     makedata=False, cdata=cdata)
         else:
-            raise FitTreeError, "Unrecognized node type: %s" % branchtype
+            raise FitTreeError("Unrecognized node type: %s" % branchtype)
 
         return newnode
 
@@ -868,7 +875,7 @@ class FitTree(wx12.TreeCtrl):
 
             if node is None:
                 message = "Cannot insert data. Malformed tree list."
-                raise FitTreeError, message
+                raise FitTreeError(message)
 
             roots.append(node)
             # Build the rest of the tree. Note that we don't want to create new
@@ -905,7 +912,7 @@ def incrementName(name, namelist, start = 1):
     that the name does not appear in the namelist.
     """
     newname = name
-    match = "\d+$"
+    match = r"\d+$"
     counter = start
     while newname in namelist:
         newname = re.sub(match, '', name)

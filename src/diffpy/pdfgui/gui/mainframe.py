@@ -352,7 +352,7 @@ class MainFrame(wx.Frame):
         # Position other panels. Note that currently MinimizeButton does not do
         # anything. It is to be implemented in future versions of wx.aui
         self.auiManager.AddPane(self.outputPanel, wx.aui.AuiPaneInfo().
-                          Name("outputPanel").Caption("PDFfit2 Output").
+                          Name("outputPanel").Caption("DiffPy-CMI Output").
                           Bottom().
                           TopDockable().
                           BottomDockable().
@@ -786,7 +786,6 @@ class MainFrame(wx.Frame):
 
         if paneltype is None:
             paneltype = "blank"
-
         self.rightPanel = self.dynamicPanels[paneltype]
         self.rightPanel.Enable(True)
         self.setPanelSpecificData(paneltype)
@@ -1481,7 +1480,7 @@ class MainFrame(wx.Frame):
                 # not, we disable pasteLink
                 fitname = cdata.name
                 fits = self.treeCtrlMain.GetChildren(self.treeCtrlMain.root)
-                fitnames = map(self.treeCtrlMain.GetItemText, fits)
+                fitnames = set(map(self.treeCtrlMain.GetItemText, fits))
                 if fitname not in fitnames:
                     menu.Enable(self.pasteLinkId, False)
             # pasteLink only if there's a fit in the clipboard
@@ -1735,7 +1734,7 @@ class MainFrame(wx.Frame):
         cdata = self.treeCtrlMain.GetClipboard()
         fitname = cdata.name
         fits = self.treeCtrlMain.GetChildren(self.treeCtrlMain.root)
-        fitnames = map(self.treeCtrlMain.GetItemText, fits)
+        fitnames = set(map(self.treeCtrlMain.GetItemText, fits))
         if fitname not in fitnames: return
 
         ep = None
@@ -1745,7 +1744,7 @@ class MainFrame(wx.Frame):
         newnode = self.treeCtrlMain.PasteBranch(ep)
         # Now link the fit
         newfit = self.treeCtrlMain.GetControlData(newnode)
-        oldparnames = cdata.parameters.keys()
+        oldparnames = set(cdata.parameters.keys())
         for (parname, par) in newfit.parameters.items():
             if parname in oldparnames:
                 parval = "=%s:%s" % (fitname, parname)
@@ -1812,7 +1811,7 @@ class MainFrame(wx.Frame):
         # find a node to choose after deletion
         fitroot = None
         roots = self.treeCtrlMain.GetChildren(self.treeCtrlMain.root)
-        delroots = map(self.treeCtrlMain.GetFitRoot, selections)
+        delroots = list(map(self.treeCtrlMain.GetFitRoot, selections))
         # Find the fit node above the first removed node.
         for root in roots:
             if root in selections:
@@ -1880,7 +1879,7 @@ class MainFrame(wx.Frame):
                 self.runningDict[name] = sel
         self.needsSave()
 
-        IDlist = map(self.treeCtrlMain.GetControlData, allnodes)
+        IDlist = list(map(self.treeCtrlMain.GetControlData, allnodes))
         self.control.start(IDlist)
         return
 
@@ -1888,7 +1887,7 @@ class MainFrame(wx.Frame):
         """Stop all fits.
 
         This removes all items from the runningDict and changes the status
-        colors back to wxWHITE.
+        colors back to wxWHITE.'fit
         """
         self.control.stop()
         self.needsSave()
@@ -2092,7 +2091,7 @@ class MainFrame(wx.Frame):
         import webbrowser
         try:
             webbrowser.open(USERSMAILINGLIST)
-        except Exception, e:
+        except Exception as e:
             errorinfo = 'Failed to open "%s"' % e
             raise ControlError(errorinfo)
         return
@@ -2221,7 +2220,7 @@ class MainFrame(wx.Frame):
                 self.workpath = os.path.dirname(self.fullpath)
                 self.fileHistory.AddFileToHistory(self.fullpath)
                 self.updateTitle()
-            except ControlError, e:
+            except ControlError as e:
                 self.fileHistory.RemoveFileFromHistory(index)
                 self.updateConfiguration()
                 self.writeConfiguration()
@@ -2248,7 +2247,7 @@ class MainFrame(wx.Frame):
             if len(savename) < 3 or savename[-3:] != "res":
                 savename += ".res"
             path = os.path.join(self.workpath, savename)
-            outfile = file(path, 'w')
+            outfile = open(path, 'w')
             outfile.write(cdata.res)
             outfile.close()
         d.Destroy()
@@ -2298,7 +2297,7 @@ class MainFrame(wx.Frame):
                 savename += ".%s" % extlist[i]
             path = os.path.join(self.workpath, savename)
             text = cdata.initial.writeStr(fmtlist[i])
-            outfile = file(path, 'w')
+            outfile = open(path, 'w')
             outfile.write(text)
             outfile.close()
         d.Destroy()
@@ -2330,7 +2329,7 @@ class MainFrame(wx.Frame):
                 savename += ".%s" % extlist[i]
             path = os.path.join(self.workpath, savename)
             text = cdata.refined.writeStr(fmtlist[i])
-            outfile = file(path, 'w')
+            outfile = open(path, 'w')
             outfile.write(text)
             outfile.close()
         d.Destroy()
@@ -2388,7 +2387,7 @@ class MainFrame(wx.Frame):
     def onDocumentation(self, event):
         """Show information about the documentation."""
         import webbrowser
-        from urllib import pathname2url
+        from six.moves.urllib.request import pathname2url
         url = 'file://' + pathname2url(docMainFile)
         webbrowser.open(url)
         return
@@ -2497,7 +2496,14 @@ class MainFrame(wx.Frame):
 
     def updateOutput(self):
         """Update text in outputPanel with text in stdout."""
-        self.outputPanel.updateText(self.control.getEngineOutput())
+        # self.outputPanel.updateText(self.control.getEngineOutput())
+        #long
+        # TODO: append CMI result after pdffit result
+        if self.control.getCMIOutput():
+            print("update")
+            self.outputPanel.updateText(self.control.getCMIOutput())
+            self.control.resetCMIOutput() #only output cmi results once
+        #end long
         return
 
 # end of class MainPanel

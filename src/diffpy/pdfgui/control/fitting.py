@@ -13,6 +13,8 @@
 #
 ##############################################################################
 
+from __future__ import print_function
+
 import threading
 import time
 
@@ -20,6 +22,16 @@ from diffpy.pdfgui.control.organizer import Organizer
 from diffpy.pdfgui.control.controlerrors import ControlError
 from diffpy.pdfgui.control.controlerrors import ControlStatusError
 from diffpy.pdfgui.control.controlerrors import ControlValueError
+from diffpy.pdfgui.utils import safeCPickleDumps, pickle_loads
+
+from diffpy.srfit.pdf import PDFContribution
+from diffpy.srfit.fitbase import Profile
+from diffpy.srreal.structureadapter import nometa
+from diffpy.srfit.fitbase import FitContribution, FitRecipe, FitResults
+from diffpy.srfit.pdf import PDFParser
+from diffpy.srfit.pdf import PDFGenerator, DebyePDFGenerator
+from diffpy.srfit.fitbase import FitRecipe, FitResults
+from scipy.optimize.minpack import leastsq
 
 # helper routines to deal with PDFfit2 exceptions
 
@@ -52,7 +64,7 @@ def handleEngineException(error, gui=None):
     if gui:
         gui.postEvent(gui.ERROR, "<Engine exception> %s" % errorInfo)
     else:
-        print "<Engine exception> %s" % errorInfo
+        print("<Engine exception> %s" % errorInfo)
     return
 
 ##############################################################################
@@ -92,23 +104,26 @@ class Fitting(Organizer):
             """overload function from Thread """
             try:
                 self.fitting.run()
-            except ControlError,error:
+            except ControlError as error:
                 gui = self.fitting.controlCenter.gui
                 if gui:
                     gui.postEvent(gui.ERROR, "<Fitting exception> %s" % error.info)
                 else:
-                    print "<Fitting exception> %s" % error.info
-            except getEngineExceptions(), error:
+                    print("<Fitting exception> %s" % error.info)
+            except getEngineExceptions() as error:
                 gui = self.fitting.controlCenter.gui
                 handleEngineException(error, gui)
             return
 
-    def __init__(self, name):
+    def __init__(self, name, mag):
         """initialize
 
         name -- name of this fitting
         """
         Organizer.__init__(self, name)
+
+        # Magnetism
+        self.magnetism = mag
 
         # Thread, status, and control variables
         self.thread = None
@@ -120,6 +135,13 @@ class Fitting(Organizer):
 
         # the PDFfit2 server instance.
         self.server = None
+
+        # the CMI server instance.
+        self.cmipdfgen = None
+        self.cmiprofile = None
+        self.cmicontribution = None
+        self.cmirecipe = None
+        self.cmiresults = None
 
         # public data members
         self.step = 0
@@ -191,15 +213,14 @@ class Fitting(Organizer):
         subs = subpath.split('/')
         rootDict = z.fileTree[subs[0]][subs[1]]
 
-        import cPickle
-        if rootDict.has_key('parameters'):
+        if 'parameters' in rootDict:
             from diffpy.pdfgui.control.pdfguicontrol import CtrlUnpickler
             self.parameters = CtrlUnpickler.loads(z.read(subpath+'parameters'))
-        if rootDict.has_key('steps'):
+        if 'steps' in rootDict:
             self.itemIndex, self.dataNameDict, self.snapshots = \
-                    cPickle.loads(z.read(subpath+'steps'))
-        if rootDict.has_key('result'):
-            self.rw, self.res = cPickle.loads(z.read(subpath+'result'))
+                    pickle_loads(z.read(subpath+'steps'))
+        if 'result' in rootDict:
+            self.rw, self.res = pickle_loads(z.read(subpath+'result'))
 
         return Organizer.load(self, z, subpath)
 
@@ -209,17 +230,16 @@ class Fitting(Organizer):
         z       -- zipped project file
         subpath -- path to its own storage within project file
         """
-        from diffpy.pdfgui.utils import safeCPickleDumps
         if self.parameters:
-            bytes = safeCPickleDumps(self.parameters)
-            z.writestr(subpath + 'parameters', bytes)
+            spkl = safeCPickleDumps(self.parameters)
+            z.writestr(subpath + 'parameters', spkl)
         if self.res:
-            bytes = safeCPickleDumps((self.rw, self.res))
-            z.writestr(subpath + 'result', bytes)
+            spkl = safeCPickleDumps((self.rw, self.res))
+            z.writestr(subpath + 'result', spkl)
         if self.snapshots:
-            bytes = safeCPickleDumps(
+            spkl = safeCPickleDumps(
                     (self.itemIndex, self.dataNameDict, self.snapshots) )
-            z.writestr(subpath + 'steps', bytes)
+            z.writestr(subpath + 'steps', spkl)
         Organizer.save(self, z, subpath)
         return
 
@@ -246,15 +266,15 @@ class Fitting(Organizer):
         # create dictionary of parameters used in constraints
         cpars = {}
         for struc in self.strucs:
-            for idx, par in struc.findParameters().iteritems():
+            for idx, par in struc.findParameters().items():
                 if idx not in cpars:
                     cpars[idx] = par
         for dataset in self.datasets:
-            for idx, par in dataset.findParameters().iteritems():
+            for idx, par in dataset.findParameters().items():
                 if idx not in cpars:
                     cpars[idx] = par
         # add new parameters
-        for idx, par in cpars.iteritems():
+        for idx, par in cpars.items():
             if idx not in self.parameters:
                 self.parameters[idx] = par
         # remove unused parameters
@@ -293,7 +313,7 @@ class Fitting(Organizer):
         fits = pdfguicontrol().fits
         for fit in fits:
             parameters = fit.parameters
-            for par in parameters.itervalues():
+            for par in parameters.values():
                 if par.initialStr() == fiteq:
                     par.setInitial(newfiteq)
 
@@ -319,36 +339,115 @@ class Fitting(Organizer):
         # create a new instance of calculation server
         from diffpy.pdffit2 import PdfFit
         self.server = PdfFit()
+
+        self.cmiprofile = Profile()
+
         self.__changeStatus(fitStatus=Fitting.CONNECTED)
 
 
     def configure(self):
         """configure fitting"""
+        print("config")
         if self.fitStatus != Fitting.CONNECTED:
             return
 
         # make sure parameters are initialized
         self.updateParameters()
+
+        #long CMI part
+        self.applyParameters()
+
+        if self.datasets[0].pctype == 'PC':
+            self.cmipdfgen = PDFGenerator("cmipdfgen")
+        elif self.datasets[0].pctype == 'DPC':
+            self.cmipdfgen = DebyePDFGenerator("cmipdfgen")
+
+        self.cmipdfgen.setStructure(self.strucs[0])
+        parser = PDFParser()
+        parser.parseString(self.datasets[0].writeResampledObsStr())
+        self.cmiprofile.loadParsedData(parser)
+        self.cmiprofile.setCalculationRange(xmin = self.datasets[0].fitrmin,
+                                            xmax = self.datasets[0].fitrmax,
+                                            dx = self.datasets[0].fitrstep)
+
+        self.cmicontribution = FitContribution("cmicontribution")
+        self.cmicontribution.addProfileGenerator(self.cmipdfgen)
+        self.cmicontribution.setProfile(self.cmiprofile, xname ="r")
+        #(scale * cmipdfgen) + (magScale * mpdfcalc?)
+        self.cmicontribution.setEquation("scale * cmipdfgen")
+
+        # add qmax, qdamp, qbroad into cmipdfgen
+        self.cmipdfgen.setQmax(self.datasets[0].qmax)
+        self.cmipdfgen.qdamp.value = self.datasets[0].qdamp
+        self.cmipdfgen.qbroad.value = self.datasets[0].qbroad
+
+        self.cmirecipe = FitRecipe()
+        self.cmirecipe.addContribution(self.cmicontribution)
+        # self.cmirecipe.addVar(self.cmicontribution.scale, 1.0)
+
+        for index, par in self.parameters.items():
+            # clean any refined value
+            par.refined = None
+            # self.server.setpar(index, par.initialValue()) # info[0] = init value
+            var_name = "var" + str(index)
+            print("var_name")
+            print(var_name)
+            print("par.initialValue()")
+            print(par.initialValue())
+            self.cmirecipe.newVar(var_name, par.initialValue())
+            # fix if fixed.  Note: all parameters are free after self.server.reset().
+            # if par.fixed:
+            #     self.server.fixpar(index)
+
+        # phase constrains
+        for struc in self.strucs:
+            struc.clearRefined()
+            for key, var in struc.constraints.items():
+                self.cmiConstrain(key, var)
+
+        # data constrains
+        for dataset in self.datasets:
+            dataset.clearRefined()
+            for key, var in dataset.constraints.items():
+                self.cmiConstrain(key, var)
+            # Removed call to pdfrange call, because data were already
+            # resampled to at fit range.
+            #
+            # Pair selection applies only to the current dataset,
+            # therefore it has to be done here.
+            nstrucs = len(self.strucs)
+            for phaseidx, struc in zip(range(1, nstrucs + 1), self.strucs):
+                struc.applyPairSelection(self.server, phaseidx)
+
+
+        # turn on printout fithook in each refinement step
+        self.cmirecipe.fithooks[0].verbose = 3
+
+        leastsq(self.cmirecipe.residual, self.cmirecipe.values)
+        self.cmiresults = "\n=============================== CMI RESULTS ==================================\n"
+        self.cmiresults += str(FitResults(self.cmirecipe))
+        self.cmiresults += "============================ END OF CMI RESULTS ==============================\n\n"
+
+        #Long end CMI part
+
         self.server.reset()
         for struc in self.strucs:
             struc.clearRefined()
-            self.server.read_struct_string(struc.initial.writeStr("pdffit") )
+            self.server.read_struct_string(struc.initial.writeStr("pdffit"))
             for key, var in struc.constraints.items():
-                key_ascii = key.encode('ascii')
-                formula_ascii = var.formula.encode('ascii')
-                self.server.constrain(key_ascii, formula_ascii)
+                self.server.constrain(key, var.formula)
 
         # phase paramters configured
 
         for dataset in self.datasets:
             dataset.clearRefined()
             self.server.read_data_string(dataset.writeResampledObsStr(),
-                                         dataset.stype.encode('ascii'),
+                                         dataset.stype,
                                          dataset.qmax,
                                          dataset.qdamp)
             self.server.setvar('qbroad', dataset.qbroad)
             for key,var in dataset.constraints.items():
-                self.server.constrain(key.encode('ascii'), var.formula.encode('ascii'))
+                self.server.constrain(key, var.formula)
             # Removed call to pdfrange call, because data were already
             # resampled to at fit range.
             #
@@ -377,6 +476,14 @@ class Fitting(Organizer):
         """reset status back to initialized"""
         self.snapshots = []
         self.step = 0
+        # long
+        # initialize cmi
+        self.cmipdfgen = None
+        self.cmiprofile = None
+        self.cmicontribution = None
+        self.cmirecipe = None
+        self.cmiresults = None
+        # end long
         if self.fitStatus == Fitting.INITIALIZED:
             return  # already reset
 
@@ -452,11 +559,11 @@ class Fitting(Organizer):
             self._configureBondCalculation(struc)
             self.server.bang(i, j, k)
             self._release()
-        except getEngineExceptions(), error:
+        except getEngineExceptions() as error:
             gui = self.controlCenter.gui
             handleEngineException(error, gui)
-        except ValueError, error:
-            raise ControlValueError, str(error)
+        except ValueError as error:
+            raise ControlValueError(str(error))
         return
 
 
@@ -476,11 +583,11 @@ class Fitting(Organizer):
             self._configureBondCalculation(struc)
             self.server.blen(i, j)
             self._release()
-        except getEngineExceptions(), error:
+        except getEngineExceptions() as error:
             gui = self.controlCenter.gui
             handleEngineException(error, gui)
-        except ValueError, error:
-            raise ControlValueError, str(error)
+        except ValueError as error:
+            raise ControlValueError(str(error))
         return
 
 
@@ -502,11 +609,11 @@ class Fitting(Organizer):
             self._configureBondCalculation(struc)
             self.server.blen(a1, a2, lb, ub)
             self._release()
-        except getEngineExceptions(), error:
+        except getEngineExceptions() as error:
             gui = self.controlCenter.gui
             handleEngineException(error, gui)
-        except ValueError, error:
-            raise ControlValueError, str(error)
+        except ValueError as error:
+            raise ControlValueError(str(error))
         return
 
 
@@ -574,8 +681,7 @@ class Fitting(Organizer):
                 #      way while user choose to stop forcefully
         else:
             if self.isThreadRunning():
-                raise ControlStatusError,\
-                "Fitting: Fitting %s is still running"%self.name
+                raise ControlStatusError("Fitting: Fitting %s is still running"%self.name)
             if self.thread is not None:
                 self.thread.join()
 
@@ -605,7 +711,7 @@ class Fitting(Organizer):
         for dataset in self.datasets:
             id = dataset._getStrId()
             dataNameDict[id] = {}
-            for itemName in dataset.constraints.keys() + ['Gcalc','crw']:
+            for itemName in list(dataset.constraints.keys()) + ['Gcalc','crw']:
                 dataNameDict[id][itemName] = self.itemIndex
                 self.itemIndex += 1
 
@@ -700,7 +806,7 @@ class Fitting(Organizer):
             istruc += 1
 
         # update parameters
-        for idx, par in self.parameters.iteritems():
+        for idx, par in self.parameters.items():
             par.refined = self.server.getpar(idx)
 
         self.rw = self.server.getrw()
@@ -725,7 +831,7 @@ class Fitting(Organizer):
 
         returns a name str list
         """
-        names = self.parameters.keys()
+        names = list(self.parameters.keys())
         names.append('rw')
         return names
 
@@ -763,10 +869,10 @@ class Fitting(Organizer):
         for dataset in self.datasets:
             # build up the name list
             if not names:
-                names = dataset.metadata.keys()
+                names = list(dataset.metadata.keys())
             else:
                 for name in names[:]:
-                    if name not in dataset.metadata.keys():
+                    if name not in dataset.metadata:
                         names.remove(name)
         return names
 
@@ -810,5 +916,119 @@ class Fitting(Organizer):
             return [ self.snapshots[i][index] for i in step ]
         else:
             return self.snapshots[step][index]
+
+    # Long new helper function
+    def cmiConstrain(self, key, var):
+        """Constrain structure parameters into cmi receipe.
+        key -- names of parameters, like pscale, lat(n).
+        var -- var.formula represents names of constrains, like @1, @2 + 1.
+        """
+        key_ref, key_arg = self.__getRef(key)
+        var_name = self.transVar(var.formula)
+
+        lat = self.cmipdfgen.phase.getLattice()
+        atoms = self.cmipdfgen.phase.getScatterers()
+
+        if key_ref == 'pscale':
+            self.cmirecipe.constrain(self.cmicontribution.scale, var_name)
+        if key_ref == 'lat':
+            if key_arg == '1':
+                self.cmirecipe.constrain(lat.a, var_name)
+            if key_arg == '2':
+                self.cmirecipe.constrain(lat.b, var_name)
+            if key_arg == '3':
+                self.cmirecipe.constrain(lat.c, var_name)
+            if key_arg == '4':
+                self.cmirecipe.constrain(lat.alpha, var_name)
+            if key_arg == '5':
+                self.cmirecipe.constrain(lat.beta, var_name)
+            if key_arg == '6':
+                self.cmirecipe.constrain(lat.gamma, var_name)
+
+        # delta term
+        if key_ref == 'delta1':
+            self.cmirecipe.constrain(self.cmipdfgen.delta1, var_name)
+        if key_ref == 'delta2':
+            self.cmirecipe.constrain(self.cmipdfgen.delta2, var_name)
+
+        # ADP
+        ## TODO key_ascii == 'u11(i)', constrain the ith atom's ADP U11.
+        if key_ref == 'u11':
+            self.cmirecipe.constrain(atoms[key_arg - 1].U11, var_name)
+        if key_ref == 'u22':
+            self.cmirecipe.constrain(atoms[key_arg - 1].U22, var_name)
+        if key_ref == 'u33':
+            self.cmirecipe.constrain(atoms[key_arg - 1].U33, var_name)
+        if key_ref == 'u12':
+            self.cmirecipe.constrain(atoms[key_arg - 1].U12, var_name)
+        if key_ref == 'u13':
+            self.cmirecipe.constrain(atoms[key_arg - 1].U13, var_name)
+        if key_ref == 'u23':
+            self.cmirecipe.constrain(atoms[key_arg - 1].U23, var_name)
+
+        # atom positions
+        if key_ref == 'x':
+            self.cmirecipe.constrain(atoms[key_arg - 1].x, var_name)
+        if key_ref == 'y':
+            self.cmirecipe.constrain(atoms[key_arg - 1].y, var_name)
+        if key_ref == 'z':
+            self.cmirecipe.constrain(atoms[key_arg - 1].z, var_name)
+
+        # occupancy
+        if key_ref == 'occ':
+            self.cmirecipe.constrain(atoms[key_arg - 1].occupancy, var_name)
+
+        # data parameters
+        if key_ascii_ref == 'qdamp':
+            self.cmirecipe.constrain(self.cmipdfgen.qdamp, var_name)
+        if key_ascii_ref == 'qbroad':
+            self.cmirecipe.constrain(self.cmipdfgen.qbroad, var_name)
+        # TODO how to deal with `dscale`. cmipdfgen don't have `dscale` parameter.
+
+        return
+
+    def transVar(self, str):
+        # input "@11"
+        # output "var11"
+        return str.replace("@", "var")
+
+    def __getRef(self, var_string):
+        # copy from __getRef in pdffit.py from PDFfit2 package.
+        # input pscale, output method_string = "pscale", arg_int = None
+        # input lat(1), output method_string = "lat", arg_int = 1
+        # input u11(2), output method_string = "u11", arg_int = 2
+        """Return the actual reference to the variable in the var_string.
+
+        This function must be called before trying to actually reference an
+        internal variable. See the constrain method for an example.
+
+        Raises:
+            pdffit2.unassignedError if variable is not yet assigned
+            ValueError if variable index does not exist (e.g. lat(7))
+        """
+        var_string = _convertCallable(var_string)
+        arg_int = None
+        try:
+            method_string, arg_string = var_string.split("(")
+            method_string = method_string.strip()
+            arg_int = int(arg_string.strip(")").strip())
+        except ValueError: #There is no arg_string
+            method_string = var_string.strip()
+        return method_string, arg_int
+
+
+# Long helper routines
+def _convertCallable(var):
+     """Convert an object to the result of its call when callable.
+
+     var -- string or callable object that returns string
+
+     Return var or var().
+     """
+     if callable(var):
+         rv = var()
+     else:
+         rv = var
+     return rv
 
 # End of file
